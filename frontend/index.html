@@ -82,23 +82,47 @@
       }
 
       button {
-        cursor: pointer;
         border: 0;
         border-radius: 12px;
         padding: 14px 16px;
-        color: #ffffff;
-        background: #2563eb;
+        color: #94a3b8;
+        background: #e2e8f0;
         font: inherit;
         font-weight: 800;
+        box-shadow: none;
       }
 
-      button:hover {
-        background: #1d4ed8;
+      button:not(:disabled) {
+        cursor: pointer;
+        color: #ffffff;
+        background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%);
+        box-shadow:
+          0 7px 0 #1e40af,
+          0 14px 24px rgb(37 99 235 / 0.28);
+        transform: translateY(-2px);
+        transition:
+          background 0.15s ease,
+          box-shadow 0.15s ease,
+          transform 0.15s ease;
+      }
+
+      button:not(:disabled):hover {
+        background: linear-gradient(180deg, #60a5fa 0%, #1d4ed8 100%);
+        box-shadow:
+          0 8px 0 #1e3a8a,
+          0 16px 28px rgb(37 99 235 / 0.34);
+        transform: translateY(-3px);
+      }
+
+      button:not(:disabled):active {
+        box-shadow:
+          0 2px 0 #1e3a8a,
+          0 8px 16px rgb(37 99 235 / 0.24);
+        transform: translateY(3px);
       }
 
       button:disabled {
-        cursor: wait;
-        opacity: 0.65;
+        cursor: not-allowed;
       }
 
       pre {
@@ -131,10 +155,10 @@
       </section>
 
       <section class="actions" aria-label="Attendance actions">
-        <button type="button" data-endpoint="/api/attendance/checkin">Clock In</button>
-        <button type="button" data-endpoint="/api/attendance/checkout">Clock Out</button>
-        <button type="button" data-endpoint="/api/attendance/break-start">Break Start</button>
-        <button type="button" data-endpoint="/api/attendance/break-end">Break End</button>
+        <button type="button" data-action="checkin" data-endpoint="/api/attendance/checkin">Clock In</button>
+        <button type="button" data-action="checkout" data-endpoint="/api/attendance/checkout">Clock Out</button>
+        <button type="button" data-action="break-start" data-endpoint="/api/attendance/break-start">Break Start</button>
+        <button type="button" data-action="break-end" data-endpoint="/api/attendance/break-end">Break End</button>
       </section>
 
       <section aria-label="Latest API response">
@@ -149,25 +173,43 @@
       const workDateElement = document.querySelector("#work-date");
       const responseElement = document.querySelector("#response");
       const actionButtons = document.querySelectorAll("button[data-endpoint]");
+      const enabledActionsByStatus = {
+        BEFORE_WORK: ["checkin"],
+        WORKING: ["checkout", "break-start"],
+        AWAY: ["break-end", "checkout"],
+        FINISHED: [],
+      };
+      let currentStatus = "BEFORE_WORK";
+      let isLoading = true;
 
       function showJson(data) {
         responseElement.textContent = JSON.stringify(data, null, 2);
       }
 
+      function updateButtonState() {
+        const enabledActions = enabledActionsByStatus[currentStatus] || [];
+
+        actionButtons.forEach((button) => {
+          button.disabled = isLoading || !enabledActions.includes(button.dataset.action);
+        });
+      }
+
       function updateAttendance(data) {
         if (data.status) {
+          currentStatus = data.status;
           statusElement.textContent = data.status;
         }
 
         if (data.work_date) {
           workDateElement.textContent = data.work_date;
         }
+
+        updateButtonState();
       }
 
-      function setLoading(isLoading) {
-        actionButtons.forEach((button) => {
-          button.disabled = isLoading;
-        });
+      function setLoading(nextIsLoading) {
+        isLoading = nextIsLoading;
+        updateButtonState();
       }
 
       async function requestJson(path, options = {}) {
@@ -187,11 +229,13 @@
             `/api/attendance/status?user_id=${encodeURIComponent(USER_ID)}`,
           );
           updateAttendance(data);
+          setLoading(false);
           showJson(data);
         } catch (error) {
           showJson({ error });
           statusElement.textContent = "Error";
           workDateElement.textContent = "Error";
+          setLoading(true);
         }
       }
 
@@ -219,6 +263,7 @@
         button.addEventListener("click", () => runAction(button.dataset.endpoint));
       });
 
+      updateButtonState();
       loadStatus();
     </script>
   </body>

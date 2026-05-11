@@ -1,10 +1,33 @@
 use axum::{
     Router,
-    extract::Query,
+    extract::{Query, State},
     response::Json,
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::Mutex;
+
+type AttendanceStatusStorage = Arc<Mutex<HashMap<String, AttendanceStatus>>>;
+
+#[derive(Clone, Copy)]
+enum AttendanceStatus {
+    BeforeWork,
+    Working,
+    Away,
+    Finished,
+}
+
+impl AttendanceStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::BeforeWork => "BEFORE_WORK",
+            Self::Working => "WORKING",
+            Self::Away => "AWAY",
+            Self::Finished => "FINISHED",
+        }
+    }
+}
 
 #[derive(Serialize)]
 struct HealthResponse {
@@ -56,6 +79,8 @@ struct AttendanceEventsResponse {
 
 #[tokio::main]
 async fn main() {
+    let attendance_statuses = AttendanceStatusStorage::default();
+
     let app = Router::new()
         .route("/", get(root))
         .route("/api/health", get(health))
@@ -64,7 +89,8 @@ async fn main() {
         .route("/api/attendance/break-start", post(break_start))
         .route("/api/attendance/break-end", post(break_end))
         .route("/api/attendance/status", get(attendance_status))
-        .route("/api/attendance/events", get(attendance_events));
+        .route("/api/attendance/events", get(attendance_events))
+        .with_state(attendance_statuses);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
 
@@ -81,51 +107,82 @@ async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
 
-async fn checkin(Json(payload): Json<AttendanceActionRequest>) -> Json<AttendanceActionResponse> {
-    let _user_id = payload.user_id;
-
-    Json(AttendanceActionResponse {
-        result: "success",
-        status: "WORKING",
-    })
+async fn checkin(
+    State(attendance_statuses): State<AttendanceStatusStorage>,
+    Json(payload): Json<AttendanceActionRequest>,
+) -> Json<AttendanceActionResponse> {
+    set_attendance_status(
+        &attendance_statuses,
+        payload.user_id,
+        AttendanceStatus::Working,
+    )
+    .await
 }
 
-async fn checkout(Json(payload): Json<AttendanceActionRequest>) -> Json<AttendanceActionResponse> {
-    let _user_id = payload.user_id;
-
-    Json(AttendanceActionResponse {
-        result: "success",
-        status: "FINISHED",
-    })
+async fn checkout(
+    State(attendance_statuses): State<AttendanceStatusStorage>,
+    Json(payload): Json<AttendanceActionRequest>,
+) -> Json<AttendanceActionResponse> {
+    set_attendance_status(
+        &attendance_statuses,
+        payload.user_id,
+        AttendanceStatus::Finished,
+    )
+    .await
 }
 
 async fn break_start(
+    State(attendance_statuses): State<AttendanceStatusStorage>,
     Json(payload): Json<AttendanceActionRequest>,
 ) -> Json<AttendanceActionResponse> {
-    let _user_id = payload.user_id;
-
-    Json(AttendanceActionResponse {
-        result: "success",
-        status: "AWAY",
-    })
+    set_attendance_status(
+        &attendance_statuses,
+        payload.user_id,
+        AttendanceStatus::Away,
+    )
+    .await
 }
 
-async fn break_end(Json(payload): Json<AttendanceActionRequest>) -> Json<AttendanceActionResponse> {
-    let _user_id = payload.user_id;
+async fn break_end(
+    State(attendance_statuses): State<AttendanceStatusStorage>,
+    Json(payload): Json<AttendanceActionRequest>,
+) -> Json<AttendanceActionResponse> {
+    set_attendance_status(
+        &attendance_statuses,
+        payload.user_id,
+        AttendanceStatus::Working,
+    )
+    .await
+}
+
+async fn set_attendance_status(
+    attendance_statuses: &AttendanceStatusStorage,
+    user_id: String,
+    status: AttendanceStatus,
+) -> Json<AttendanceActionResponse> {
+    attendance_statuses.lock().await.insert(user_id, status);
 
     Json(AttendanceActionResponse {
         result: "success",
-        status: "WORKING",
+        status: status.as_str(),
     })
 }
 
 async fn attendance_status(
+    State(attendance_statuses): State<AttendanceStatusStorage>,
     Query(params): Query<AttendanceStatusQuery>,
 ) -> Json<AttendanceStatusResponse> {
+    let status = attendance_statuses
+        .lock()
+        .await
+        .get(&params.user_id)
+        .copied()
+        .unwrap_or(AttendanceStatus::BeforeWork);
+
     Json(AttendanceStatusResponse {
         user_id: params.user_id,
         work_date: "2026-05-11",
-        status: "BEFORE_WORK",
+        status: status.as_str(),
     })
 }
 
