@@ -1,4 +1,5 @@
 mod app;
+mod db;
 mod handlers;
 mod models;
 mod state;
@@ -7,7 +8,12 @@ use state::AppState;
 
 #[tokio::main]
 async fn main() {
-    let state = AppState::default();
+    let db_pool = db::create_pool()
+        .await
+        .expect("failed to connect to database");
+    println!("Connected to PostgreSQL database");
+
+    let state = AppState::new(db_pool);
     let app = app::build_router(state);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
 
