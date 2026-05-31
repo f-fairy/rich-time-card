@@ -88,6 +88,7 @@ CREATE TABLE user_groups (
     work_start_time TIME,
     work_end_time TIME,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT fk_user_groups_timezone
         FOREIGN KEY (timezone_id)
@@ -105,13 +106,13 @@ CREATE TABLE user_groups (
 CREATE TABLE users (
     user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     group_id UUID NOT NULL,
-    login_id VARCHAR(50),
+    login_id VARCHAR(50) NOT NULL,
     email VARCHAR(255) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
-    last_name VARCHAR(100),
-    first_name VARCHAR(100),
+    display_name VARCHAR(256),
     is_admin BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT uq_users_group_login
         UNIQUE (group_id, login_id),
@@ -135,6 +136,7 @@ CREATE TABLE attendance_events (
     event_type attendance_event_type NOT NULL,
     location VARCHAR(255),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT fk_attendance_events_user
         FOREIGN KEY (user_id)
@@ -177,6 +179,7 @@ CREATE TABLE daily_remarks (
     work_date DATE NOT NULL,
     comment TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT uq_daily_remarks
         UNIQUE (user_id, work_date),
