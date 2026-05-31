@@ -7,20 +7,117 @@ use crate::{
     state::{AppState, AttendanceStatusStorage},
 };
 use axum::{
+    Json,
     extract::{Query, State},
-    response::Json,
+    http::StatusCode,
+    response::{IntoResponse, Response},
 };
+use serde::Serialize;
+use sqlx::PgPool;
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
+}
+
+pub(crate) struct AppError {
+    status: StatusCode,
+    message: String,
+}
+
+impl AppError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
+    fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message: message.into(),
+        }
+    }
+
+    fn internal(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: message.into(),
+        }
+    }
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        (
+            self.status,
+            Json(ErrorResponse {
+                error: self.message,
+            }),
+        )
+            .into_response()
+    }
+}
 
 pub async fn checkin(
     State(state): State<AppState>,
     Json(payload): Json<AttendanceActionRequest>,
-) -> Json<AttendanceActionResponse> {
-    set_attendance_status(
-        &state.attendance_statuses,
-        payload.user_id,
-        AttendanceStatus::Working,
+) -> Result<Json<AttendanceActionResponse>, AppError> {
+    validate_user_exists(&state.db_pool, &payload.user_id).await?;
+
+    let mut tx = state
+        .db_pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to start database transaction"))?;
+
+    let event_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO attendance_events (user_id, work_date, occurred_at, event_type)
+        VALUES ($1::uuid, CURRENT_DATE, NOW(), $2::attendance_event_type)
+        RETURNING event_id
+        "#,
     )
+    .bind(&payload.user_id)
+    .bind("CLOCK_IN")
+    .fetch_one(&mut *tx)
     .await
+    .map_err(map_sqlx_error)?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO current_attendance_status (
+            user_id,
+            work_date,
+            current_status,
+            last_event_id,
+            updated_at
+        )
+        VALUES ($1::uuid, CURRENT_DATE, $2::attendance_status_type, $3, NOW())
+        ON CONFLICT (user_id)
+        DO UPDATE SET
+            work_date = EXCLUDED.work_date,
+            current_status = EXCLUDED.current_status,
+            last_event_id = EXCLUDED.last_event_id,
+            updated_at = NOW()
+        "#,
+    )
+    .bind(&payload.user_id)
+    .bind(AttendanceStatus::Working.as_str())
+    .bind(event_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(map_sqlx_error)?;
+
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit database transaction"))?;
+
+    Ok(Json(AttendanceActionResponse {
+        result: "success",
+        status: AttendanceStatus::Working.as_str(),
+    }))
 }
 
 pub async fn checkout(
@@ -75,20 +172,38 @@ async fn set_attendance_status(
 pub async fn attendance_status(
     State(state): State<AppState>,
     Query(params): Query<AttendanceStatusQuery>,
-) -> Json<AttendanceStatusResponse> {
-    let status = state
-        .attendance_statuses
-        .lock()
-        .await
-        .get(&params.user_id)
-        .copied()
-        .unwrap_or(AttendanceStatus::BeforeWork);
+) -> Result<Json<AttendanceStatusResponse>, AppError> {
+    validate_user_exists(&state.db_pool, &params.user_id).await?;
 
-    Json(AttendanceStatusResponse {
+    let status = sqlx::query_as::<_, (String, String)>(
+        r#"
+        SELECT work_date::text, current_status::text
+        FROM current_attendance_status
+        WHERE user_id = $1::uuid
+        "#,
+    )
+    .bind(&params.user_id)
+    .fetch_optional(&state.db_pool)
+    .await
+    .map_err(map_sqlx_error)?;
+
+    let (work_date, status) = match status {
+        Some((work_date, status)) => (work_date, status),
+        None => {
+            let work_date: String = sqlx::query_scalar("SELECT CURRENT_DATE::text")
+                .fetch_one(&state.db_pool)
+                .await
+                .map_err(map_sqlx_error)?;
+
+            (work_date, AttendanceStatus::BeforeWork.as_str().to_owned())
+        }
+    };
+
+    Ok(Json(AttendanceStatusResponse {
         user_id: params.user_id,
-        work_date: "2026-05-11",
-        status: status.as_str(),
-    })
+        work_date,
+        status,
+    }))
 }
 
 pub async fn attendance_events(
@@ -120,4 +235,29 @@ pub async fn attendance_events(
             },
         ],
     })
+}
+
+async fn validate_user_exists(db_pool: &PgPool, user_id: &str) -> Result<(), AppError> {
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE user_id = $1::uuid)")
+            .bind(user_id)
+            .fetch_one(db_pool)
+            .await
+            .map_err(map_sqlx_error)?;
+
+    if exists {
+        Ok(())
+    } else {
+        Err(AppError::not_found("user_id does not exist"))
+    }
+}
+
+fn map_sqlx_error(error: sqlx::Error) -> AppError {
+    if let sqlx::Error::Database(database_error) = &error {
+        if database_error.code().as_deref() == Some("22P02") {
+            return AppError::bad_request("user_id must be a valid UUID string");
+        }
+    }
+
+    AppError::internal("database operation failed")
 }

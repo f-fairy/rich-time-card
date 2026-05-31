@@ -38,8 +38,8 @@ pub struct AttendanceStatusQuery {
 #[derive(Serialize)]
 pub struct AttendanceStatusResponse {
     pub user_id: String,
-    pub work_date: &'static str,
-    pub status: &'static str,
+    pub work_date: String,
+    pub status: String,
 }
 
 #[derive(Deserialize)]
