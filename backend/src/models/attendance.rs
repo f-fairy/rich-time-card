@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttendanceStatus {
     BeforeWork,
     Working,
@@ -16,6 +16,16 @@ impl AttendanceStatus {
             Self::Working => "WORKING",
             Self::Away => "AWAY",
             Self::Finished => "FINISHED",
+        }
+    }
+
+    pub fn from_db_value(value: &str) -> Result<Self, String> {
+        match value {
+            "BEFORE_WORK" => Ok(Self::BeforeWork),
+            "WORKING" => Ok(Self::Working),
+            "AWAY" => Ok(Self::Away),
+            "FINISHED" => Ok(Self::Finished),
+            _ => Err(format!("unknown attendance status value: {value}")),
         }
     }
 }
