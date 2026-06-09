@@ -20,6 +20,7 @@ struct ErrorResponse {
     error: String,
 }
 
+// Handler-local error wrapper for returning consistent JSON errors.
 pub(crate) struct AppError {
     status: StatusCode,
     message: String,
@@ -50,6 +51,7 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        // Keeps handler errors mapped to stable HTTP status codes and JSON shape.
         (
             self.status,
             Json(ErrorResponse {
@@ -68,11 +70,13 @@ pub async fn checkin(
 
     validate_user_exists(&state.db_pool, &payload.user_id).await?;
 
+    // DB-backed checkin writes the event log and current status atomically.
     let mut tx = state.db_pool.begin().await.map_err(|error| {
         println!("database error starting checkin transaction: {error}");
         AppError::internal("failed to start database transaction")
     })?;
 
+    // attendance_events is append-only history for audit/replay.
     let event_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO attendance_events (user_id, work_date, occurred_at, event_type)
@@ -88,6 +92,7 @@ pub async fn checkin(
 
     println!("inserted attendance_event: event_id={event_id}");
 
+    // current_attendance_status is the mutable snapshot for fast status reads.
     sqlx::query(
         r#"
         INSERT INTO current_attendance_status (
@@ -133,6 +138,7 @@ pub async fn checkout(
     State(state): State<AppState>,
     Json(payload): Json<AttendanceActionRequest>,
 ) -> Json<AttendanceActionResponse> {
+    // Mock/in-memory until checkout persistence is implemented.
     set_attendance_status(
         &state.attendance_statuses,
         payload.user_id,
@@ -145,6 +151,7 @@ pub async fn break_start(
     State(state): State<AppState>,
     Json(payload): Json<AttendanceActionRequest>,
 ) -> Json<AttendanceActionResponse> {
+    // Mock/in-memory until break-start persistence is implemented.
     set_attendance_status(
         &state.attendance_statuses,
         payload.user_id,
@@ -157,6 +164,7 @@ pub async fn break_end(
     State(state): State<AppState>,
     Json(payload): Json<AttendanceActionRequest>,
 ) -> Json<AttendanceActionResponse> {
+    // Mock/in-memory until break-end persistence is implemented.
     set_attendance_status(
         &state.attendance_statuses,
         payload.user_id,
@@ -186,6 +194,7 @@ pub async fn attendance_status(
 
     validate_user_exists(&state.db_pool, &params.user_id).await?;
 
+    // DB-backed status only returns today's snapshot for the requested user.
     let status = sqlx::query_as::<_, (String, String, String)>(
         r#"
         SELECT CURRENT_DATE::text, work_date::text, current_status::text
@@ -209,6 +218,7 @@ pub async fn attendance_status(
             (stored_work_date, stored_status)
         }
         Some((current_date, stored_work_date, _)) => {
+            // A previous day's snapshot is stale, so the UI starts from BEFORE_WORK today.
             println!(
                 "previous-day status ignored: user_id={}, stored_work_date={}, current_date={}",
                 params.user_id, stored_work_date, current_date
@@ -243,6 +253,7 @@ pub async fn attendance_status(
 pub async fn attendance_events(
     Query(params): Query<AttendanceEventsQuery>,
 ) -> Json<AttendanceEventsResponse> {
+    // Mock/static for now; DB-backed event reads will replace this response.
     Json(AttendanceEventsResponse {
         user_id: params.user_id,
         work_date: params.work_date,

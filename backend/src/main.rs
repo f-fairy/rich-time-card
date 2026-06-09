@@ -1,3 +1,4 @@
+// Backend modules are kept small: routing, database setup, handlers, shared models, and app state.
 mod app;
 mod db;
 mod handlers;

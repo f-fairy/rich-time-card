@@ -9,6 +9,7 @@ pub enum AttendanceStatus {
 }
 
 impl AttendanceStatus {
+    // API/DB representation for the shared attendance state machine.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::BeforeWork => "BEFORE_WORK",
