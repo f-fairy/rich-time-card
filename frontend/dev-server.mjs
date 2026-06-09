@@ -21,6 +21,7 @@ function sendJsonError(response, statusCode, message) {
 }
 
 async function proxyApi(request, response) {
+  // Keep frontend calls same-origin while forwarding /api traffic to Axum.
   const target = new URL(request.url, backendOrigin);
   const backendResponse = await fetch(target, {
     method: request.method,
@@ -52,6 +53,7 @@ async function serveFile(request, response) {
   const normalizedPath = normalize(requestPath === "/" ? "/index.html" : requestPath);
   const filePath = join(rootDir, normalizedPath);
 
+  // Prevent paths such as /../ from escaping the frontend directory.
   if (!filePath.startsWith(rootDir)) {
     sendJsonError(response, 403, "Forbidden");
     return;

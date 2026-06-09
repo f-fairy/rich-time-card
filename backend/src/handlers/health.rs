@@ -1,6 +1,7 @@
 use axum::response::Json;
 use serde::Serialize;
 
+// Lightweight endpoints for server/API reachability checks.
 #[derive(Serialize)]
 pub struct HealthResponse {
     status: &'static str,

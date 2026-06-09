@@ -8,6 +8,7 @@ use axum::{
 };
 
 pub fn build_router(state: AppState) -> Router {
+    // Central route registration; handlers decide whether data is DB-backed or still mocked.
     Router::new()
         .route("/", get(health::root))
         .route("/api/health", get(health::health))

@@ -329,6 +329,7 @@
     </footer>
 
     <script>
+      // Seeded demo user from docs/database/seed-user-data.sql.
       const USER_ID = "00000000-0000-0000-0005-000000000001";
       const statusElement = document.querySelector("#status");
       const workDateElement = document.querySelector("#work-date");
@@ -336,6 +337,7 @@
       const currentTimeElement = document.querySelector("#current-time");
       const currentDateElement = document.querySelector("#current-date");
       const actionButtons = document.querySelectorAll("button[data-endpoint]");
+      // Buttons are enabled only when the current attendance status allows that transition.
       const enabledActionsByStatus = {
         BEFORE_WORK: ["checkin"],
         WORKING: ["checkout", "break-start"],
@@ -362,6 +364,7 @@
       }
 
       function updateClock() {
+        // Refresh the visible local clock without involving the backend.
         const now = new Date();
         currentTimeElement.textContent = timeFormatter.format(now);
         currentDateElement.textContent = dateFormatter.format(now);
@@ -371,6 +374,7 @@
         const enabledActions = enabledActionsByStatus[currentStatus] || [];
 
         actionButtons.forEach((button) => {
+          // Disable during requests to avoid duplicate submissions.
           button.disabled = isLoading || !enabledActions.includes(button.dataset.action);
         });
       }
@@ -406,6 +410,7 @@
 
       async function loadStatus() {
         try {
+          // Initial load hydrates the UI from the DB-backed status endpoint.
           const data = await requestJson(
             `/api/attendance/status?user_id=${encodeURIComponent(USER_ID)}`,
           );
@@ -424,6 +429,7 @@
         setLoading(true);
 
         try {
+          // Action buttons post the seeded user to the endpoint declared in HTML.
           const data = await requestJson(endpoint, {
             method: "POST",
             headers: {
