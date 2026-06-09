@@ -35,7 +35,7 @@ CREATE TYPE attendance_event_type AS ENUM (
 CREATE TYPE attendance_status_type AS ENUM (
     'BEFORE_WORK',
     'WORKING',
-    'OUTSIDE',
+    'AWAY',
     'FINISHED'
 );
 

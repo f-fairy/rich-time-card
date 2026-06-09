@@ -4,7 +4,7 @@ use crate::{
         AttendanceEventsResponse, AttendanceStatus, AttendanceStatusQuery,
         AttendanceStatusResponse,
     },
-    state::{AppState, AttendanceStatusStorage},
+    state::AppState,
 };
 use axum::{
     Json,
@@ -13,7 +13,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 
 #[derive(Serialize)]
 struct ErrorResponse {
@@ -137,11 +137,13 @@ pub async fn checkin(
 pub async fn checkout(
     State(state): State<AppState>,
     Json(payload): Json<AttendanceActionRequest>,
-) -> Json<AttendanceActionResponse> {
-    // Mock/in-memory until checkout persistence is implemented.
-    set_attendance_status(
-        &state.attendance_statuses,
-        payload.user_id,
+) -> Result<Json<AttendanceActionResponse>, AppError> {
+    handle_attendance_action(
+        &state.db_pool,
+        payload,
+        "checkout",
+        "CLOCK_OUT",
+        AttendanceStatus::Working,
         AttendanceStatus::Finished,
     )
     .await
@@ -150,11 +152,13 @@ pub async fn checkout(
 pub async fn break_start(
     State(state): State<AppState>,
     Json(payload): Json<AttendanceActionRequest>,
-) -> Json<AttendanceActionResponse> {
-    // Mock/in-memory until break-start persistence is implemented.
-    set_attendance_status(
-        &state.attendance_statuses,
-        payload.user_id,
+) -> Result<Json<AttendanceActionResponse>, AppError> {
+    handle_attendance_action(
+        &state.db_pool,
+        payload,
+        "break-start",
+        "GO_OUT",
+        AttendanceStatus::Working,
         AttendanceStatus::Away,
     )
     .await
@@ -163,27 +167,153 @@ pub async fn break_start(
 pub async fn break_end(
     State(state): State<AppState>,
     Json(payload): Json<AttendanceActionRequest>,
-) -> Json<AttendanceActionResponse> {
-    // Mock/in-memory until break-end persistence is implemented.
-    set_attendance_status(
-        &state.attendance_statuses,
-        payload.user_id,
+) -> Result<Json<AttendanceActionResponse>, AppError> {
+    handle_attendance_action(
+        &state.db_pool,
+        payload,
+        "break-end",
+        "RETURN",
+        AttendanceStatus::Away,
         AttendanceStatus::Working,
     )
     .await
 }
 
-async fn set_attendance_status(
-    attendance_statuses: &AttendanceStatusStorage,
-    user_id: String,
-    status: AttendanceStatus,
-) -> Json<AttendanceActionResponse> {
-    attendance_statuses.lock().await.insert(user_id, status);
+async fn handle_attendance_action(
+    db_pool: &PgPool,
+    payload: AttendanceActionRequest,
+    action_name: &'static str,
+    event_type: &'static str,
+    required_status: AttendanceStatus,
+    next_status: AttendanceStatus,
+) -> Result<Json<AttendanceActionResponse>, AppError> {
+    println!(
+        "{action_name} request received: user_id={}",
+        payload.user_id
+    );
 
-    Json(AttendanceActionResponse {
+    validate_user_exists(db_pool, &payload.user_id).await?;
+
+    let mut tx = db_pool.begin().await.map_err(|error| {
+        println!("database error starting {action_name} transaction: {error}");
+        AppError::internal("failed to start database transaction")
+    })?;
+
+    let current_status = load_today_status(&mut tx, &payload.user_id).await?;
+    if current_status != required_status {
+        return Err(AppError::bad_request(format!(
+            "invalid attendance transition for {action_name}: current status is {}, expected {}",
+            current_status.as_str(),
+            required_status.as_str()
+        )));
+    }
+
+    let event_id = insert_attendance_event(&mut tx, &payload.user_id, event_type).await?;
+    println!("inserted attendance_event: event_id={event_id}");
+
+    upsert_current_status(&mut tx, &payload.user_id, next_status, event_id).await?;
+    println!(
+        "current_attendance_status upsert success: user_id={}, event_id={event_id}",
+        payload.user_id
+    );
+
+    tx.commit().await.map_err(|error| {
+        println!("database error committing {action_name} transaction: {error}");
+        AppError::internal("failed to commit database transaction")
+    })?;
+
+    Ok(Json(AttendanceActionResponse {
         result: "success",
-        status: status.as_str(),
-    })
+        status: next_status.as_str(),
+    }))
+}
+
+async fn load_today_status(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: &str,
+) -> Result<AttendanceStatus, AppError> {
+    let status = sqlx::query_as::<_, (String, String, String)>(
+        r#"
+        SELECT CURRENT_DATE::text, work_date::text, current_status::text
+        FROM current_attendance_status
+        WHERE user_id = $1::uuid
+        "#,
+    )
+    .bind(user_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_sqlx_error)?;
+
+    match status {
+        Some((current_date, stored_work_date, stored_status))
+            if stored_work_date == current_date =>
+        {
+            AttendanceStatus::from_db_value(&stored_status).map_err(|message| {
+                println!("database error: {message}");
+                AppError::internal("database operation failed")
+            })
+        }
+        Some((current_date, stored_work_date, _)) => {
+            println!(
+                "previous-day status ignored: user_id={user_id}, stored_work_date={stored_work_date}, current_date={current_date}"
+            );
+            Ok(AttendanceStatus::BeforeWork)
+        }
+        None => Ok(AttendanceStatus::BeforeWork),
+    }
+}
+
+async fn insert_attendance_event(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: &str,
+    event_type: &str,
+) -> Result<i64, AppError> {
+    sqlx::query_scalar(
+        r#"
+        INSERT INTO attendance_events (user_id, work_date, occurred_at, event_type)
+        VALUES ($1::uuid, CURRENT_DATE, NOW(), $2::attendance_event_type)
+        RETURNING event_id
+        "#,
+    )
+    .bind(user_id)
+    .bind(event_type)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(map_sqlx_error)
+}
+
+async fn upsert_current_status(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: &str,
+    status: AttendanceStatus,
+    event_id: i64,
+) -> Result<(), AppError> {
+    sqlx::query(
+        r#"
+        INSERT INTO current_attendance_status (
+            user_id,
+            work_date,
+            current_status,
+            last_event_id,
+            updated_at
+        )
+        VALUES ($1::uuid, CURRENT_DATE, $2::attendance_status_type, $3, NOW())
+        ON CONFLICT (user_id)
+        DO UPDATE SET
+            work_date = EXCLUDED.work_date,
+            current_status = EXCLUDED.current_status,
+            last_event_id = EXCLUDED.last_event_id,
+            updated_at = NOW()
+        "#,
+    )
+    .bind(user_id)
+    .bind(status.as_str())
+    .bind(event_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_sqlx_error)?;
+
+    Ok(())
 }
 
 pub async fn attendance_status(
